@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>세균 돋보기</title>
+<style>
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:#0d1220; color:#fff;
+    font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  #video { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+  #cv { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }
+
+  .round { width:58px; height:58px; border-radius:50%; border:0; font-size:26px;
+    background:rgba(255,255,255,.22); color:#fff; backdrop-filter:blur(8px); }
+  #home { position:absolute; left:14px; top:max(14px, env(safe-area-inset-top)); z-index:5; }
+  #clean { position:absolute; right:14px; top:max(14px, env(safe-area-inset-top)); z-index:5;
+    border:0; border-radius:20px; padding:8px 14px; background:#fff; color:#1b2340;
+    display:flex; flex-direction:column; align-items:center; font-weight:800; font-size:13px;
+    box-shadow:0 4px 14px rgba(0,0,0,.35); }
+  #clean .em { font-size:34px; line-height:1.1; }
+  #clean.done { background:#3fc3a0; color:#fff; }
+
+  #bottombar { position:absolute; left:0; right:0; bottom:0; z-index:5; display:flex; justify-content:center;
+    align-items:center; gap:28px; padding:12px; padding-bottom:max(18px, env(safe-area-inset-bottom)); }
+  #snap { width:76px; height:76px; font-size:32px; background:#fff; color:#1b2340; }
+
+  #hint { position:absolute; left:50%; top:24%; transform:translateX(-50%); z-index:4;
+    background:rgba(0,0,0,.55); padding:12px 20px; border-radius:16px; font-size:20px; font-weight:700;
+    text-align:center; white-space:nowrap; transition:opacity .3s; pointer-events:none; }
+  #hint.hide { opacity:0; }
+  #toast { position:absolute; left:50%; top:42%; transform:translate(-50%,-50%) scale(.6); z-index:6;
+    background:rgba(255,255,255,.95); color:#1b2340; padding:18px 28px; border-radius:22px;
+    font-size:28px; font-weight:900; text-align:center; opacity:0; pointer-events:none;
+    transition:opacity .3s, transform .3s; }
+  #toast.show { opacity:1; transform:translate(-50%,-50%) scale(1); }
+  #frozenTag { position:absolute; right:16px; bottom:calc(110px + env(safe-area-inset-bottom)); z-index:5;
+    background:#ff5a7a; padding:6px 12px; border-radius:10px; font-weight:800; display:none; }
+
+  .screen { position:absolute; inset:0; z-index:10; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; text-align:center; padding:24px; background:radial-gradient(circle at 50% 30%, #26335a, #0d1220 70%); }
+  .screen h1 { font-size:38px; margin:8px 0 4px; }
+  .screen p { font-size:18px; opacity:.85; line-height:1.6; margin:4px 0 26px; }
+  #startEmoji { font-size:68px; }
+  .pickRow { display:flex; flex-direction:column; gap:14px; width:min(340px, 90vw); }
+  .pick { border:0; border-radius:22px; padding:16px 20px; font-size:24px; font-weight:800;
+    background:#fff; color:#1b2340; display:flex; align-items:center; gap:14px; }
+  .pick span { font-size:40px; }
+  #loading { display:none; background:rgba(13,18,32,.85); }
+  #loading .spin { width:54px; height:54px; border-radius:50%; border:6px solid rgba(255,255,255,.25); border-top-color:#fff; animation:sp 1s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  #err { color:#ffb3c0; font-size:16px; margin-top:18px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="cv"></canvas>
+
+  <button id="clean"><span class="em">🧼</span><span class="lb">씻고 왔어요</span></button>
+
+  <div id="hint"></div>
+  <div id="toast">깨끗해졌어요! ✨</div>
+  <div id="frozenTag">⏸ 멈춤</div>
+
+  <div id="bottombar">
+    <button id="flip" class="round" title="카메라 전환">🔄</button>
+    <button id="snap" class="round" title="찍기">📸</button>
+    <div style="width:58px"></div>
+  </div>
+
+  <div id="start" class="screen">
+    <div id="startEmoji">🔬</div>
+    <h1>세균 돋보기</h1>
+    <p>어디에 세균이 숨어 있는지<br>카메라로 비춰 볼까요?</p>
+    <p style="font-size:16px;margin-top:-12px">✋ 손 · 🙂 얼굴 · 🦷 입을 '아~' 벌리면 입속까지<br>보여주기만 하면 알아서 찾아요</p>
+    <button id="startBtn" class="pick" style="justify-content:center"><span>🔍</span>시작하기</button>
+    <div id="err"></div>
+  </div>
+
+  <div id="loading" class="screen"><div class="spin"></div><p id="loadMsg">세균 돋보기 준비 중…</p></div>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker, FaceLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+
+// ---------- 설정 (수업에 맞게 바꿔도 됨) ----------
+// 손 세균 크기 (손목~가운데손가락 뿌리 길이 대비 비율). 더 작게: 0.03 / 더 크게: 0.06
+const HAND_GERM_SIZE = 0.042;
+const CONFIG = { hand: { count: 34 }, face: { count: 26 }, mouth: { count: 16 } };
+const HINT = "손이나 얼굴을 보여주세요 ✋🙂";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), cv = $("cv"), ctx = cv.getContext("2d");
+let vision, handLM, faceLM;
+let facing = "user", stream = null, running = false;
+let frozen = false, cleaned = false;
+let lastVideoTime = -1;
+let germs = { hand: [[], []], face: [], mouth: [] };
+let smooth = { hand: [null, null], face: null };
+let lastResult = { hand: [], face: null };
+let busy = false;
+
+// ---------- 세균 그리기 ----------
+const PALETTE = ["#7fb069","#9b6bd6","#5aa9e6","#e6b84a","#d65a9b","#4fc1a6","#e07a5f","#8e7dbe"];
+const TYPES = ["virus","rod","cocci","virus","rod","spiral","cocci"];
+const rnd = (a,b) => a + Math.random()*(b-a);
+const pick = (arr) => arr[Math.floor(Math.random()*arr.length)];
+
+function makeGerm(extra) {
+  return Object.assign({
+    type: pick(TYPES), color: pick(PALETTE),
+    size: rnd(0.55, 1.25), rot: rnd(0, Math.PI*2), spin: rnd(-0.6, 0.6),
+    phase: rnd(0, 10), face: Math.random() < 0.35, alive: true, popT: 0,
+    // 꼬물꼬물 이동용
+    ws1: rnd(0.5, 1.1), ws2: rnd(0.9, 1.8), wamp: rnd(0.35, 0.7),
+    wig: rnd(5, 8),
+  }, extra);
+}
+
+// 제자리 주변을 기어다니는 경로 (s 단위)
+function wander(g, t) {
+  const a = t*g.ws1 + g.phase, b = t*g.ws2 + g.phase*1.7;
+  return [ (Math.sin(a) + 0.5*Math.sin(b*1.3)) * g.wamp,
+           (Math.cos(a*0.8) + 0.5*Math.sin(b)) * g.wamp ];
+}
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n>>16},${(n>>8)&255},${n&255},${a})`;
+}
+
+function drawGerm(g, x, y, s, t) {
+  // s: 기본 크기(px)
+  let scale = 1, alpha = 0.88;
+  if (!g.alive && t >= g.popT) { // 사라지는 애니메이션
+    const p = Math.min(1, (t - g.popT) / 0.5);
+    if (p >= 1) return;
+    scale = 1 + p*0.8; alpha = 0.88*(1-p);
+  }
+  const r = s * g.size * scale;
+  // 기어가는 위치와 진행 방향
+  const [w0x, w0y] = wander(g, t), [w1x, w1y] = wander(g, t + 0.05);
+  const heading = Math.atan2(w1y - w0y, w1x - w0x);
+  const wob = 0.25*Math.sin(t*g.wig*0.5 + g.phase);
+  // 꿈틀(늘었다 줄었다)
+  const sq = 0.13*Math.sin(t*g.wig + g.phase);
+  ctx.save();
+  ctx.translate(x + w0x*s, y + w0y*s);
+  const turns = (g.type === "rod" || g.type === "spiral");
+  ctx.rotate(turns ? heading + wob*0.6 : g.rot + t*g.spin*0.3 + wob);
+  ctx.scale(1 + sq, 1 - sq);
+  ctx.globalAlpha = alpha;
+  const c = g.color;
+  ctx.lineWidth = Math.max(1, r*0.08);
+  ctx.strokeStyle = hexA(c, 0.95);
+
+  if (g.type === "virus") {
+    const spikes = 12;
+    for (let i=0;i<spikes;i++) {
+      const a = i/spikes*Math.PI*2 + 0.08*Math.sin(t*4 + i);
+      const len = 1.32 + 0.12*Math.sin(t*6 + i*1.7 + g.phase);
+      ctx.beginPath(); ctx.moveTo(Math.cos(a)*r*0.8, Math.sin(a)*r*0.8);
+      ctx.lineTo(Math.cos(a)*r*len, Math.sin(a)*r*len); ctx.stroke();
+      ctx.beginPath(); ctx.arc(Math.cos(a)*r*(len+0.03), Math.sin(a)*r*(len+0.03), r*0.11, 0, Math.PI*2);
+      ctx.fillStyle = hexA(c, 0.95); ctx.fill();
+    }
+    const gr = ctx.createRadialGradient(-r*0.3,-r*0.3,r*0.1,0,0,r);
+    gr.addColorStop(0, hexA("#ffffff",0.55)); gr.addColorStop(1, hexA(c,0.85));
+    ctx.beginPath(); ctx.arc(0,0,r*0.85,0,Math.PI*2); ctx.fillStyle = gr; ctx.fill(); ctx.stroke();
+    ctx.fillStyle = hexA("#ffffff",0.35);
+    for (let i=0;i<5;i++){ const a=i*1.3+g.phase; ctx.beginPath(); ctx.arc(Math.cos(a)*r*0.45,Math.sin(a)*r*0.45,r*0.09,0,Math.PI*2); ctx.fill(); }
+  } else if (g.type === "rod") {
+    const w = r*2.2, h = r*0.8;
+    // 몸통이 S자로 휘며 기어감
+    const bodyY = (u) => Math.sin(u*Math.PI*1.4 - t*g.wig) * h*0.28;
+    // 꼬리 편모 (뒤쪽에서 물결)
+    ctx.strokeStyle = hexA(c,0.65); ctx.lineWidth = Math.max(1,r*0.06); ctx.lineCap = "round";
+    for (let k=-1;k<=1;k++) {
+      ctx.beginPath();
+      for (let i=0;i<=14;i++){ const u=i/14;
+        const xx = -w/2 - u*r*1.3, yy = k*h*0.2 + Math.sin(u*Math.PI*3 - t*g.wig*1.6 + k)*r*0.25*u + bodyY(0);
+        i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); }
+      ctx.stroke();
+    }
+    // 테두리 → 몸통 → 하이라이트 순서로 굵은 선을 그려 말랑한 막대 표현
+    const path = () => { ctx.beginPath();
+      for (let i=0;i<=16;i++){ const u=i/16, xx=(u-0.5)*(w-h); i?ctx.lineTo(xx,bodyY(u)):ctx.moveTo(xx,bodyY(u)); } };
+    ctx.lineCap = "round";
+    path(); ctx.strokeStyle = hexA(c,0.95); ctx.lineWidth = h + Math.max(2,r*0.16); ctx.stroke();
+    path(); ctx.strokeStyle = hexA(c,0.75); ctx.lineWidth = h; ctx.stroke();
+    ctx.save(); ctx.translate(0,-h*0.18);
+    path(); ctx.strokeStyle = hexA("#ffffff",0.35); ctx.lineWidth = h*0.3; ctx.stroke();
+    ctx.restore();
+  } else if (g.type === "cocci") {
+    const pts = [[0,0],[0.9,0.1],[0.45,0.8],[-0.45,0.75],[-0.85,0]].map(([px,py],i) =>
+      [px + 0.1*Math.sin(t*7 + i*2 + g.phase), py + 0.1*Math.cos(t*6 + i*1.3 + g.phase)]);
+    for (const [px,py] of pts) {
+      const gr = ctx.createRadialGradient(px*r*0.55-r*0.12,py*r*0.55-r*0.12,1,px*r*0.55,py*r*0.55,r*0.45);
+      gr.addColorStop(0, hexA("#ffffff",0.6)); gr.addColorStop(1, hexA(c,0.9));
+      ctx.beginPath(); ctx.arc(px*r*0.55, py*r*0.55, r*0.42, 0, Math.PI*2);
+      ctx.fillStyle = gr; ctx.fill(); ctx.stroke();
+    }
+  } else { // spiral
+    ctx.lineWidth = Math.max(2, r*0.28); ctx.lineCap = "round";
+    ctx.strokeStyle = hexA(c,0.9);
+    ctx.beginPath();
+    for (let i=0;i<=30;i++){ const u=i/30; const xx=(u-0.5)*r*2.6; const yy=Math.sin(u*Math.PI*4 + t*3)*r*0.35;
+      i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); }
+    ctx.stroke();
+  }
+
+  if (g.face && r > 9 && g.type !== "spiral") { // 귀여운 눈
+    ctx.scale(1/(1+sq), 1/(1-sq));
+    ctx.rotate(-(turns ? heading + wob*0.6 : g.rot + t*g.spin*0.3 + wob));
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(-r*0.25,-r*0.1,r*0.17,0,Math.PI*2); ctx.arc(r*0.25,-r*0.1,r*0.17,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#222";
+    ctx.beginPath(); ctx.arc(-r*0.22,-r*0.06,r*0.08,0,Math.PI*2); ctx.arc(r*0.28,-r*0.06,r*0.08,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = "#222"; ctx.lineWidth = Math.max(1,r*0.06);
+    ctx.beginPath(); ctx.arc(0, r*0.18, r*0.18, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+
+// ---------- 세균 배치: 고르게 퍼뜨리기 ----------
+// "가장 멀리 떨어진 후보 고르기" 방식으로 한곳에 몰리지 않게 함
+function spread(n, sampler, distFn, tries = 14) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    let best = null, bestD = -1;
+    for (let k = 0; k < tries; k++) {
+      const c = sampler();
+      let d = Infinity;
+      for (const o of out) d = Math.min(d, distFn(c, o));
+      if (d > bestD) { bestD = d; best = c; }
+    }
+    out.push(best);
+  }
+  return out;
+}
+
+// 손: 펼친 손 모양 기준 좌표(대략)로 거리를 재서 고르게 배치
+const HAND_TPL = [[0,0],[-.35,-.15],[-.6,-.35],[-.8,-.55],[-.95,-.75],[-.25,-.95],[-.3,-1.35],[-.33,-1.6],[-.35,-1.82],
+  [0,-1],[0,-1.45],[0,-1.72],[0,-1.95],[.22,-.95],[.27,-1.35],[.3,-1.6],[.32,-1.8],[.42,-.85],[.52,-1.15],[.58,-1.35],[.62,-1.52]];
+const PALM_TRI = [[0,5,17,4],[0,1,5,1.5],[1,2,5,0.8],[5,9,17,0.6],[9,13,17,0.5]]; // 마지막 값 = 비중(넓이)
+const FINGER_SEG = [[1,2],[2,3],[3,4],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[17,18],[18,19],[19,20]];
+function bary() { let a=Math.random(), b=Math.random(); if (a+b>1){a=1-a;b=1-b;} return [1-a-b,a,b]; }
+function pickWeighted(list) {
+  const tot = list.reduce((s,x) => s + x[3], 0); let r = Math.random()*tot;
+  for (const x of list) { r -= x[3]; if (r <= 0) return x; } return list[0];
+}
+function handSample() {
+  if (Math.random() < 0.6) {
+    const tri = pickWeighted(PALM_TRI);
+    return { kind:"tri", idx: tri.slice(0,3), w: bary() };
+  }
+  return { kind:"seg", idx: pick(FINGER_SEG), t: Math.random(), off: rnd(-0.3,0.3) };
+}
+function tplPos(g) {
+  const T = HAND_TPL;
+  if (g.kind === "tri") { const [a,b,c] = g.idx.map(i => T[i]);
+    return [a[0]*g.w[0]+b[0]*g.w[1]+c[0]*g.w[2], a[1]*g.w[0]+b[1]*g.w[1]+c[1]*g.w[2]]; }
+  const a = T[g.idx[0]], b = T[g.idx[1]];
+  return [a[0]+(b[0]-a[0])*g.t, a[1]+(b[1]-a[1])*g.t];
+}
+function seedHand() {
+  return spread(CONFIG.hand.count, handSample, (p,q) => { const a=tplPos(p), b=tplPos(q); return Math.hypot(a[0]-b[0], a[1]-b[1]); })
+    .map(p => makeGerm({ ...p, size: rnd(0.5, 1.0), wamp: rnd(0.3, 0.55) }));
+}
+
+// 얼굴: 코끝 중심 ~ 얼굴 윤곽선 사이를 넓이 기준으로 고르게
+const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,
+  152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+const FACE_CENTER = 4;
+function faceSample() {
+  const pos = Math.random() * FACE_OVAL.length;
+  return { kind:"fan", k: Math.floor(pos), f: pos - Math.floor(pos), rr: Math.sqrt(rnd(0.08, 0.85)) };
+}
+function facePolar(g) { const a = (g.k + g.f) / FACE_OVAL.length * Math.PI * 2; return [Math.sin(a)*g.rr, -Math.cos(a)*g.rr*1.3]; }
+function seedFace() {
+  return spread(CONFIG.face.count, faceSample, (p,q) => { const a=facePolar(p), b=facePolar(q); return Math.hypot(a[0]-b[0], a[1]-b[1]); })
+    .map(p => makeGerm({ ...p, size: rnd(0.5, 1.0), wamp: rnd(0.3, 0.5) }));
+}
+
+// 입속
+function seedMouth() {
+  return spread(CONFIG.mouth.count, () => ({ kind:"mouth", u: rnd(-0.85,0.85), v: rnd(-0.8,0.8) }),
+    (p,q) => Math.hypot(p.u-q.u, (p.v-q.v)*0.6))
+    .map(p => makeGerm({ ...p, size: rnd(0.45, 0.9), wamp: rnd(0.2, 0.4) }));
+}
+function seedAll() {
+  germs.hand = [seedHand(), seedHand()];
+  germs.face = seedFace();
+  germs.mouth = seedMouth();
+}
+
+const INNER_LIP = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
+// 얼굴 모드에서 세균을 안 그릴 곳: 눈, 입술
+const EYE_L = [33,133,159,145], EYE_R = [362,263,386,374], MOUTH_OUT = [61,291,0,17];
+
+function P(lm, i) { return [lm[i].x*cv.width, lm[i].y*cv.height]; }
+function dist(a,b){ return Math.hypot(a[0]-b[0], a[1]-b[1]); }
+
+function germPos(g, lm) {
+  if (g.kind === "tri") {
+    const [a,b,c] = g.idx.map(i => P(lm,i));
+    return [a[0]*g.w[0]+b[0]*g.w[1]+c[0]*g.w[2], a[1]*g.w[0]+b[1]*g.w[1]+c[1]*g.w[2]];
+  }
+  if (g.kind === "fan") {
+    const c = P(lm, FACE_CENTER);
+    const a = P(lm, FACE_OVAL[g.k]), b = P(lm, FACE_OVAL[(g.k+1) % FACE_OVAL.length]);
+    const ex = a[0] + (b[0]-a[0])*g.f, ey = a[1] + (b[1]-a[1])*g.f;
+    return [c[0] + (ex-c[0])*g.rr, c[1] + (ey-c[1])*g.rr];
+  }
+  if (g.kind === "seg") {
+    const a = P(lm,g.idx[0]), b = P(lm,g.idx[1]);
+    const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy)||1;
+    const nx=-dy/L, ny=dx/L, wdt = L*0.55;
+    return [a[0]+dx*g.t + nx*g.off*wdt, a[1]+dy*g.t + ny*g.off*wdt];
+  }
+}
+
+// 네 점(좌,우,위,아래)으로 만든 타원 안에 있는지
+function inEllipse(pt, lm, ids, pad) {
+  const L = P(lm,ids[0]), R = P(lm,ids[1]), T = P(lm,ids[2]), B = P(lm,ids[3]);
+  const cx = (L[0]+R[0])/2, cy = (T[1]+B[1])/2;
+  const ax = Math.hypot(R[0]-L[0], R[1]-L[1])/2 * pad, ay = Math.max(Math.hypot(B[0]-T[0], B[1]-T[1])/2, ax*0.45) * pad;
+  const ang = Math.atan2(R[1]-L[1], R[0]-L[0]);
+  const dx = pt[0]-cx, dy = pt[1]-cy;
+  const u = dx*Math.cos(ang) + dy*Math.sin(ang), v = -dx*Math.sin(ang) + dy*Math.cos(ang);
+  return (u*u)/(ax*ax) + (v*v)/(ay*ay) < 1;
+}
+
+function smoothLm(prev, cur, k=0.5) {
+  if (!prev || prev.length !== cur.length) return cur.map(p => ({x:p.x,y:p.y}));
+  return cur.map((p,i) => ({ x: prev[i].x + (p.x-prev[i].x)*k, y: prev[i].y + (p.y-prev[i].y)*k }));
+}
+
+// ---------- 모델 / 카메라 ----------
+async function ensureModels() {
+  if (!vision) vision = await FilesetResolver.forVisionTasks(WASM);
+  const mk = async (Cls, path, extra) => {
+    try {
+      return await Cls.createFromOptions(vision, { baseOptions:{ modelAssetPath:path, delegate:"GPU" }, runningMode:"VIDEO", ...extra });
+    } catch (e) {
+      return await Cls.createFromOptions(vision, { baseOptions:{ modelAssetPath:path, delegate:"CPU" }, runningMode:"VIDEO", ...extra });
+    }
+  };
+  if (!handLM) handLM = await mk(HandLandmarker, HAND_MODEL, { numHands: 2 });
+  if (!faceLM) faceLM = await mk(FaceLandmarker, FACE_MODEL, { numFaces: 1 });
+}
+
+async function startCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  video.srcObject = stream;
+  await video.play();
+  await new Promise(r => { if (video.videoWidth) r(); else video.onloadedmetadata = r; });
+  cv.width = video.videoWidth; cv.height = video.videoHeight;
+  lastVideoTime = -1;
+}
+
+function showLoading(on, msg) { $("loading").style.display = on ? "flex" : "none"; if (msg) $("loadMsg").textContent = msg; }
+function setHint(text) { const h = $("hint"); if (text) { h.textContent = text; h.classList.remove("hide"); } else h.classList.add("hide"); }
+
+function setCleanButton() {
+  const b = $("clean");
+  b.classList.toggle("done", cleaned);
+  b.querySelector(".em").textContent = cleaned ? "🦠" : "🧼";
+  b.querySelector(".lb").textContent = cleaned ? "세균 다시 보기" : "씻고 왔어요";
+}
+
+// ---------- 씻고 왔어요 ----------
+function toggleClean() {
+  const t = performance.now()/1000;
+  if (!cleaned) {
+    cleaned = true;
+    // 하나씩 톡톡 터지며 사라짐
+    for (const list of [germs.hand[0], germs.hand[1], germs.face, germs.mouth])
+      list.forEach(g => { g.alive = false; g.popT = t + Math.random()*0.9; });
+    const toast = $("toast"); toast.textContent = "깨끗해졌어요! ✨";
+    toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200);
+  } else {
+    cleaned = false;
+    seedAll();
+  }
+  setCleanButton();
+}
+
+// 터질 때 비눗방울
+const bubbles = [];
+function addBubbles(x, y, s) {
+  for (let i = 0; i < 3; i++)
+    bubbles.push({ x: x+rnd(-s,s), y: y+rnd(-s,s), r: rnd(s*0.3,s*0.8), vy: rnd(0.4,1.4), life: 1 });
+}
+function drawBubbles() {
+  for (let i = bubbles.length-1; i >= 0; i--) {
+    const b = bubbles[i]; b.y -= b.vy*2; b.life -= 0.025;
+    if (b.life <= 0) { bubbles.splice(i,1); continue; }
+    ctx.globalAlpha = b.life*0.8;
+    ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.lineWidth = 2;
+    ctx.fillStyle = "rgba(200,240,255,.18)";
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+function drawOne(g, x, y, s, t) {
+  if (!g.alive && !g.bubbled && t >= g.popT) { g.bubbled = true; addBubbles(x, y, s); }
+  drawGerm(g, x, y, s, t);
+}
+
+// ---------- 메인 루프 ----------
+let frameNo = 0;
+function detect() {
+  if (busy || !handLM || !faceLM || video.readyState < 2 || video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  const now = performance.now();
+  // 저사양 기기를 위해 손과 얼굴을 한 프레임씩 번갈아 인식
+  if (frameNo++ % 2 === 0) {
+    const r = handLM.detectForVideo(video, now);
+    const lms = (r.landmarks || []).slice().sort((a,b) => a[0].x - b[0].x);
+    lastResult.hand = lms.map((lm,i) => (smooth.hand[i] = smoothLm(smooth.hand[i], lm)));
+    for (let i = lms.length; i < 2; i++) smooth.hand[i] = null;
+  } else {
+    const r = faceLM.detectForVideo(video, now);
+    const lm = r.faceLandmarks && r.faceLandmarks[0];
+    lastResult.face = lm ? (smooth.face = smoothLm(smooth.face, lm, 0.6)) : (smooth.face = null);
+  }
+}
+
+function render() {
+  requestAnimationFrame(render);
+  if (frozen || !cv.width) return;
+  const t = performance.now()/1000;
+  detect();
+
+  ctx.save();
+  if (facing === "user") { ctx.translate(cv.width, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(video, 0, 0, cv.width, cv.height);
+
+  let hint = HINT;
+  // 손이 얼굴을 가리면 그 부분 얼굴 세균은 숨김
+  const handBoxes = lastResult.hand.map(lm => {
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for (const p of lm) { const x=p.x*cv.width, y=p.y*cv.height; x0=Math.min(x0,x); y0=Math.min(y0,y); x1=Math.max(x1,x); y1=Math.max(y1,y); }
+    const m = (x1-x0)*0.1; return [x0-m, y0-m, x1+m, y1+m];
+  });
+  const underHand = (x,y) => handBoxes.some(b => x>b[0] && x<b[2] && y>b[1] && y<b[3]);
+
+  // 1) 얼굴
+  if (lastResult.face) {
+    hint = "";
+    const lm = lastResult.face;
+    const faceW = dist(P(lm,234), P(lm,454));
+    const s = faceW * 0.035;
+    for (const g of germs.face) {
+      const [x,y] = germPos(g, lm);
+      if (underHand(x,y) || inEllipse([x,y], lm, EYE_L, 1.5) || inEllipse([x,y], lm, EYE_R, 1.5) || inEllipse([x,y], lm, MOUTH_OUT, 1.25)) continue;
+      drawOne(g, x, y, s, t);
+    }
+    // 2) 입을 벌리면 입속
+    const top = P(lm,13), bot = P(lm,14), L = P(lm,78), R = P(lm,308);
+    const open = dist(top,bot) / (dist(L,R) || 1);
+    if (open > 0.22) {
+      ctx.save();
+      ctx.beginPath();
+      INNER_LIP.forEach((i,k) => { const p = P(lm,i); k ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
+      ctx.closePath(); ctx.clip();
+      const cx = (top[0]+bot[0])/2, cy = (top[1]+bot[1])/2;
+      const hx = (R[0]-L[0])/2, hy = (R[1]-L[1])/2;
+      const vx = (bot[0]-top[0])/2, vy = (bot[1]-top[1])/2;
+      const sm = dist(L,R) * 0.07;
+      for (const g of germs.mouth) {
+        drawOne(g, cx + hx*g.u*0.85 + vx*g.v*0.85, cy + hy*g.u*0.85 + vy*g.v*0.85, sm, t);
+      }
+      ctx.restore();
+    }
+  }
+  // 3) 손 (얼굴 위에 그려서 앞에 보이게)
+  lastResult.hand.forEach((lm, i) => {
+    hint = "";
+    const s = dist(P(lm,0), P(lm,9)) * HAND_GERM_SIZE;
+    for (const g of germs.hand[i]) { const [x,y] = germPos(g, lm); drawOne(g, x, y, s, t); }
+  });
+  setHint(hint);
+  drawBubbles();
+  ctx.restore();
+}
+
+// ---------- 버튼 ----------
+$("startBtn").onclick = async () => {
+  $("err").textContent = "";
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $("err").textContent = "이 브라우저는 카메라를 지원하지 않아요. https 주소나 크롬으로 열었는지 확인해 주세요.";
+    return;
+  }
+  try {
+    showLoading(true, "카메라 켜는 중…");
+    await startCamera();
+    showLoading(true, "세균 돋보기 준비 중…");
+    busy = true;
+    try { await ensureModels(); } finally { busy = false; }
+    showLoading(false);
+    seedAll(); setCleanButton();
+    $("start").style.display = "none";
+    if (!running) { running = true; render(); }
+  } catch (e) {
+    showLoading(false);
+    $("err").textContent = "카메라를 켤 수 없어요: " + (e.name === "NotAllowedError" ? "카메라 권한을 허용해 주세요." : (e.message || e));
+  }
+};
+$("flip").onclick = async () => {
+  facing = facing === "user" ? "environment" : "user";
+  smooth = { hand:[null,null], face:null }; lastResult = { hand:[], face:null };
+  try { await startCamera(); } catch { facing = "user"; await startCamera(); }
+};
+function unfreeze() { frozen = false; $("frozenTag").style.display = "none"; $("snap").textContent = "📸"; }
+$("snap").onclick = () => {
+  if (frozen) return unfreeze();
+  frozen = true; $("frozenTag").style.display = "block"; $("snap").textContent = "▶️";
+  $("stage").animate([{ filter:"brightness(2.5)" }, { filter:"brightness(1)" }], { duration: 250 });
+};
+$("clean").onclick = () => { if (frozen) unfreeze(); toggleClean(); };
+</script>
+</body>
+</html>
