@@ -112,6 +112,9 @@ let germs = { hand: [[], []], face: [], mouth: [] };
 let smooth = { hand: [null, null], face: null };
 let lastResult = { hand: [], face: null };
 let busy = false;
+// 입 벌림 상태 (깜빡임 방지용으로 열 때/닫을 때 기준을 다르게)
+let mouthOpen = false, faceFade = 1, mouthFade = 0, fadeMul = 1, lastT = 0;
+const MOUTH_OPEN_ON = 0.25, MOUTH_OPEN_OFF = 0.16;
 
 // ---------- 세균 그리기 ----------
 const PALETTE = ["#7fb069","#9b6bd6","#5aa9e6","#e6b84a","#d65a9b","#4fc1a6","#e07a5f","#8e7dbe"];
@@ -162,7 +165,7 @@ function drawGerm(g, x, y, s, t) {
   const turns = (g.type === "rod" || g.type === "spiral");
   ctx.rotate(turns ? heading + wob*0.6 : g.rot + t*g.spin*0.3 + wob);
   ctx.scale(1 + sq, 1 - sq);
-  ctx.globalAlpha = alpha;
+  ctx.globalAlpha = alpha * fadeMul;
   const c = g.color;
   ctx.lineWidth = Math.max(1, r*0.08);
   ctx.strokeStyle = hexA(c, 0.95);
@@ -462,21 +465,31 @@ function render() {
   });
   const underHand = (x,y) => handBoxes.some(b => x>b[0] && x<b[2] && y>b[1] && y<b[3]);
 
-  // 1) 얼굴
+  // 1) 얼굴 / 2) 입속 — 입을 벌리면 얼굴 세균은 스르르 사라지고 입속 세균만 보임
+  const dt = Math.min(0.1, t - lastT); lastT = t;
   if (lastResult.face) {
     hint = "";
     const lm = lastResult.face;
-    const faceW = dist(P(lm,234), P(lm,454));
-    const s = faceW * 0.035;
-    for (const g of germs.face) {
-      const [x,y] = germPos(g, lm);
-      if (underHand(x,y) || inEllipse([x,y], lm, EYE_L, 1.5) || inEllipse([x,y], lm, EYE_R, 1.5) || inEllipse([x,y], lm, MOUTH_OUT, 1.25)) continue;
-      drawOne(g, x, y, s, t);
-    }
-    // 2) 입을 벌리면 입속
     const top = P(lm,13), bot = P(lm,14), L = P(lm,78), R = P(lm,308);
     const open = dist(top,bot) / (dist(L,R) || 1);
-    if (open > 0.22) {
+    if (!mouthOpen && open > MOUTH_OPEN_ON) mouthOpen = true;
+    else if (mouthOpen && open < MOUTH_OPEN_OFF) mouthOpen = false;
+    const k = Math.min(1, dt * 5);   // 약 0.3초 동안 부드럽게 전환
+    faceFade += ((mouthOpen ? 0 : 1) - faceFade) * k;
+    mouthFade += ((mouthOpen ? 1 : 0) - mouthFade) * k;
+
+    if (faceFade > 0.02) {
+      fadeMul = faceFade;
+      const faceW = dist(P(lm,234), P(lm,454));
+      const s = faceW * 0.035;
+      for (const g of germs.face) {
+        const [x,y] = germPos(g, lm);
+        if (underHand(x,y) || inEllipse([x,y], lm, EYE_L, 1.5) || inEllipse([x,y], lm, EYE_R, 1.5) || inEllipse([x,y], lm, MOUTH_OUT, 1.25)) continue;
+        drawOne(g, x, y, s, t);
+      }
+    }
+    if (mouthFade > 0.02 && open > 0.1) {
+      fadeMul = mouthFade;
       ctx.save();
       ctx.beginPath();
       INNER_LIP.forEach((i,k) => { const p = P(lm,i); k ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
@@ -490,7 +503,8 @@ function render() {
       }
       ctx.restore();
     }
-  }
+    fadeMul = 1;
+  } else { mouthOpen = false; faceFade = 1; mouthFade = 0; }
   // 3) 손 (얼굴 위에 그려서 앞에 보이게)
   lastResult.hand.forEach((lm, i) => {
     hint = "";
