@@ -51,6 +51,9 @@
   #loading .spin { width:54px; height:54px; border-radius:50%; border:6px solid rgba(255,255,255,.25); border-top-color:#fff; animation:sp 1s linear infinite; }
   @keyframes sp { to { transform:rotate(360deg); } }
   #err { color:#ffb3c0; font-size:16px; margin-top:18px; }
+  #credit { position:absolute; right:10px; bottom:max(6px, env(safe-area-inset-bottom)); z-index:20;
+    font-size:11px; color:rgba(255,255,255,.7); text-shadow:0 1px 3px rgba(0,0,0,.6);
+    pointer-events:none; letter-spacing:.2px; }
 </style>
 </head>
 <body>
@@ -79,6 +82,7 @@
     <div id="err"></div>
   </div>
 
+  <div id="credit">made by with_yeonni</div>
   <div id="loading" class="screen"><div class="spin"></div><p id="loadMsg">세균 돋보기 준비 중…</p></div>
 </div>
 

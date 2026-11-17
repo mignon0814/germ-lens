@@ -56,4 +56,4 @@
 
 ---
 
-Made for kids' hygiene education 🧼🦷
+Made by **with_yeonni** · for kids' hygiene education 🧼🦷
