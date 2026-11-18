@@ -363,7 +363,10 @@ async function ensureModels() {
       return await Cls.createFromOptions(vision, { baseOptions:{ modelAssetPath:path, delegate:"CPU" }, runningMode:"VIDEO", ...extra });
     }
   };
-  if (!handLM) handLM = await mk(HandLandmarker, HAND_MODEL, { numHands: 2 });
+  if (!handLM) handLM = await mk(HandLandmarker, HAND_MODEL, {
+    numHands: 2,
+    // 기본값 0.5 → 낮춰서 두 번째 손도 잘 잡히게
+    minHandDetectionConfidence: 0.3, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3 });
   if (!faceLM) faceLM = await mk(FaceLandmarker, FACE_MODEL, { numFaces: 1 });
 }
 
@@ -433,8 +436,10 @@ function detect() {
   if (busy || !handLM || !faceLM || video.readyState < 2 || video.currentTime === lastVideoTime) return;
   lastVideoTime = video.currentTime;
   const now = performance.now();
-  // 저사양 기기를 위해 손과 얼굴을 한 프레임씩 번갈아 인식
-  if (frameNo++ % 2 === 0) {
+  // 손 2번 : 얼굴 1번 비율로 번갈아 인식 (얼굴이 안 보일 땐 손 5번 : 얼굴 1번)
+  const n = frameNo++;
+  const doHand = lastResult.face ? (n % 3 !== 2) : (n % 6 !== 5);
+  if (doHand) {
     const r = handLM.detectForVideo(video, now);
     const lms = (r.landmarks || []).slice().sort((a,b) => a[0].x - b[0].x);
     lastResult.hand = lms.map((lm,i) => (smooth.hand[i] = smoothLm(smooth.hand[i], lm)));
